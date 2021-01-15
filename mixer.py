@@ -141,7 +141,8 @@ class Track(list):
     return str
 
   def duration(self):
-    tail = max(*self, key=lambda e: e.get("position")+len(e.get("sound")))
+    empty = dict(position=0, sound=[])
+    tail = max(empty, *self, key=lambda e: e.get("position")+len(e.get("sound")))
     return tail.get("position") + len(tail.get("sound"))
 
   def sprinkle(self, sound: AudioSegment, min_gap: int=0, max_gap: int=0, start: int=0, end: int=None, seed=None):
