@@ -3,7 +3,7 @@ from pydub.playback import _play_with_ffplay as playback
 from pydub.generators import WhiteNoise
 import numpy as np
 import scipy.interpolate as interp
-import os, glob, array, math
+import os, glob, array, math, random
 from pathlib import Path
 
 class LazySoundLibDict(dict):
@@ -38,8 +38,9 @@ class LazySoundLibDict(dict):
 def soundLib(str, path='.'):
   lib = LazySoundLibDict()
   lib.setPath(path)
-  for name, url in [s.split(None, 1) for s in str.strip().splitlines()]:
-    lib[name] = url
+  for name_url in [s.split(None, 1) for s in str.strip().splitlines()]:
+    if not name_url[0][0] == '#':
+      lib[name_url[0]] = name_url[1] if len(name_url) > 1 else ''
   return lib
 
 def load(path, lib=None, name=None):
@@ -143,6 +144,17 @@ class Track(list):
     tail = max(*self, key=lambda e: e.get("position")+len(e.get("sound")))
     return tail.get("position") + len(tail.get("sound"))
 
+  def sprinkle(self, sound: AudioSegment, min_gap: int=0, max_gap: int=0, start: int=0, end: int=None, seed=None):
+    random.seed(seed or sound.__hash__())
+    sd = len(sound)
+    min_gap, max_gap = min(min_gap, max_gap), max(min_gap, max_gap)
+    end = self.duration() if end is None else end
+    positions = []
+    while start + sd + max_gap < end:
+      start += min_gap if min_gap == max_gap else random.randrange(min_gap, max_gap)
+      positions.append(self.add(sound, start))
+    return positions
+
   def add(self, sound: AudioSegment, position=None, gain=0, loop=False, times=1) -> int:
     if position is None:
       position = self.t
@@ -157,9 +169,7 @@ class Track(list):
     return self.t
 
   def mix(self, normalize=False) -> AudioSegment:
-    #self.sort(key=lambda item: item.get("position", 0))
-    length = self[-1]['position'] + len(self[-1]['sound'])
-    base = silence(length)
+    base = silence(self.duration())
     for sample in self:
       sound = sample['sound'].normalize() if normalize else sample['sound']
       base = base.overlay(sound,
@@ -172,7 +182,7 @@ class Track(list):
 
 # Monkey patching AudioSegment
 def patchAudioSegment():
-  AudioSegment.name = ''
+  AudioSegment.duration = lambda self: len(self)
   AudioSegment.play = lambda self, start=0, end=None, duration=None: play(self, start, end, duration)
   AudioSegment.show = lambda self, width=120, skip_print=False: show(self, width, skip_print)
 
