@@ -3,7 +3,7 @@ from pydub.playback import _play_with_ffplay as playback
 from pydub.generators import WhiteNoise
 import numpy as np
 import scipy.interpolate as interp
-import os, glob, array
+import os, glob, array, math
 from pathlib import Path
 
 class LazySoundLibDict(dict):
@@ -15,7 +15,6 @@ class LazySoundLibDict(dict):
     if key == '__path__':
       return item
     if isinstance(item, str):
-      print(f'loading {key} ...')
       item = fetchAndLoad(item, key, self.__path__)
       dict.__setitem__(self, key, item)
     return item
@@ -49,7 +48,9 @@ def load(path, lib=None, name=None):
   if format in formats:
     format = formats[format]
   try:
+    print(f'loading "{name}" ... ', end='')
     snd = AudioSegment.from_file(path, format)
+    print(prettyDuration(len(snd)))
   except Exception as err:
     print(f'could not load {path}')
     return None
@@ -64,7 +65,7 @@ def fetch(url, name, path='.'):
   if matches:
     return matches[0]
   else:
-    os.system(f'youtube-dl -f 0 "{url}" --output "{os.path.join(path, name)}.%(ext)s"')
+    os.system(f'youtube-dl -f "bestaudio/best" "{url}" --output "{os.path.join(path, name)}.%(ext)s"')
     return glob.glob(f"{os.path.join(path, name)}.*")[0]
 
 def fetchAndLoad(url, name, path='.', lib={}):
@@ -100,11 +101,17 @@ def showMono(snd: AudioSegment, width=120, skip_print=False) -> str:
     chars.append(s / chunkSize)
   multiplier = pow(max(0.0001, max(*chars)), -1)
   chars = [c * multiplier for c in chars]
-  cm = ' ▁▂▃▄▅▆▇█'
-  str = '|' + ''.join([cm[min(len(cm)-1, int(c*(len(cm)-1)))] for c in chars]) + '|'
+  cm = '_▁▂▃▄▅▆▇█'
+  str = ''.join([cm[min(len(cm)-1, int(c*(len(cm)-1)))] for c in chars])
   if not skip_print:
     print(str)
   return str
+
+def prettyDuration(ms: int) -> str:
+  hours, ms = divmod(ms, 3600000)
+  minutes, ms = divmod(ms, 60000)
+  seconds, ms = divmod(ms, 1000)
+  return '%dh %dm %ds %dms' % (hours, minutes, seconds, ms)
 
 def play(snd: AudioSegment, start=0, end=None, duration=None):
   if end is not None:
@@ -113,6 +120,7 @@ def play(snd: AudioSegment, start=0, end=None, duration=None):
     sound = snd[start:start+abs(duration)]
   else:
     sound = snd[start:None]
+  print(prettyDuration(len(snd)))
   playback(sound)
 
 
@@ -120,21 +128,20 @@ class Track(list):
   def __init__(self):
     self.t = 0
 
-  def show(self, width=180, skip_print=False) -> str:
-    self.sort(key=lambda item: item.get("position", 0))
+  def show(self, width=120, skip_print=False) -> str:
     scale = width / self.duration()
     str = ''
     for e in self:
       p = e.get("position", 0)
       d = len(e.get("sound"))
-      str += ' '*int(p*scale)+'█'*int(d*scale) + "\n"
+      str += ' '*int(p*scale)+'┿'*math.ceil(d*scale) + "\n"
     if not skip_print:
       print(str)
     return str
 
   def duration(self):
-    last = self[-1]
-    return last['position'] + len(last['sound'])
+    tail = max(*self, key=lambda e: e.get("position")+len(e.get("sound")))
+    return tail.get("position") + len(tail.get("sound"))
 
   def add(self, sound: AudioSegment, position=None, gain=0, loop=False, times=1) -> int:
     if position is None:
@@ -146,12 +153,11 @@ class Track(list):
       loop=loop,
       times=times
     ))
-    self.sort(key=lambda item: item.get("position", 0))
-    self.t = position + len(sound)
+    self.t = position + len(sound) * times
     return self.t
 
   def mix(self, normalize=False) -> AudioSegment:
-    self.sort(key=lambda item: item.get("position", 0))
+    #self.sort(key=lambda item: item.get("position", 0))
     length = self[-1]['position'] + len(self[-1]['sound'])
     base = silence(length)
     for sample in self:
@@ -206,14 +212,26 @@ def patchAudioSegment():
     return AudioSegment.from_mono_audiosegments(*channels)
   AudioSegment.stretch = __stretch
 
-  # TODO: 
-  def __trim_silence(self, threshold=0) -> AudioSegment:
-    # channels = self.split_to_mono()
-    # lmin=0
-    # rmax=len(self)
-    # for i, chan in enumerate(channels):
-    #   for n in chan.get_array_of_samples():
-    pass
+  def __ltrim_silence(self, threshold=-50.0, chunk_size=10) -> AudioSegment:
+    """threshold in dB, chunk_size in ms"""
+    trim_ms = 0 # ms
+    assert chunk_size > 0 # to avoid infinite loop
+    while self[trim_ms:trim_ms+chunk_size].dBFS < threshold and trim_ms < len(self):
+      trim_ms += chunk_size
+    return self[trim_ms:]
+  AudioSegment.ltrim_silence = __ltrim_silence
+
+  def __rtrim_silence(self, threshold=-50.0, chunk_size=10) -> AudioSegment:
+    """silence_threshold in dB, chunk_size in ms"""
+    trim_ms = 0 # ms
+    assert chunk_size > 0 # to avoid infinite loop
+    while self[-(trim_ms+chunk_size):-trim_ms].dBFS < threshold and trim_ms < len(self):
+      trim_ms += chunk_size
+    return self[:-trim_ms]
+  AudioSegment.rtrim_silence = __rtrim_silence
+  
+  def __trim_silence(self, threshold=-50.0, chunk_size=10) -> AudioSegment:
+    return self.ltrim_silence(threshold, chunk_size).rtrim_silence(threshold, chunk_size)
   AudioSegment.trim_silence = __trim_silence
 
 patchAudioSegment()
