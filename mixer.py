@@ -1,6 +1,7 @@
 from pydub import AudioSegment
 from pydub.playback import _play_with_ffplay as playback
 from pydub.generators import WhiteNoise
+import pydub.scipy_effects
 import numpy as np
 import scipy.interpolate as interp
 import os, glob, array, math, random
@@ -35,7 +36,7 @@ class LazySoundLibDict(dict):
       raise AttributeError(k)
 
 
-def soundLib(str, path='.'):
+def load_sounds(str, path='.'):
   lib = LazySoundLibDict()
   lib.setPath(path)
   for name_url in [s.split(None, 1) for s in str.strip().splitlines()]:
@@ -82,31 +83,8 @@ def loadAll(path, lib={}):
 def silence(duration) -> AudioSegment:
   return AudioSegment.silent(duration)
 
-def whitenoise(duration) -> AudioSegment:
-  WhiteNoise().to_audio_segment(duration=duration).apply_gain(-40)
-
-def show(snd: AudioSegment, width=180, skip_print=False) -> str:
-  str = ''
-  for chan in snd.split_to_mono():
-    str += showMono(chan, width, skip_print)
-  return str
-
-def showMono(snd: AudioSegment, width=120, skip_print=False) -> str:
-  data = snd.get_array_of_samples()
-  chunkSize = int(len(data) / width)
-  chars = []
-  for co in range(0, len(data)-chunkSize, chunkSize):
-    s = 0
-    for c in range(co, co+chunkSize):
-      s += abs(data[c])
-    chars.append(s / chunkSize)
-  multiplier = pow(max(0.0001, max(*chars)), -1)
-  chars = [c * multiplier for c in chars]
-  cm = '_▁▂▃▄▅▆▇█'
-  str = ''.join([cm[min(len(cm)-1, int(c*(len(cm)-1)))] for c in chars])
-  if not skip_print:
-    print(str)
-  return str
+def whitenoise(duration=1000) -> AudioSegment:
+  return WhiteNoise().to_audio_segment(duration)
 
 def prettyDuration(ms: int) -> str:
   hours, ms = divmod(ms, 3600000)
@@ -114,16 +92,13 @@ def prettyDuration(ms: int) -> str:
   seconds, ms = divmod(ms, 1000)
   return '%dh %dm %ds %dms' % (hours, minutes, seconds, ms)
 
-def play(snd: AudioSegment, start=0, end=None, duration=None):
-  if end is not None:
-    sound = snd[start:end]
-  elif duration is not None:
-    sound = snd[start:start+abs(duration)]
-  else:
-    sound = snd[start:None]
-  print(prettyDuration(len(snd)))
-  playback(sound)
-
+def endless_random_list(arr: list):
+  random.seed(hash(tuple(arr)))
+  while True:
+    a = arr.copy()
+    random.shuffle(a)
+    while a:
+      yield a.pop()
 
 class Track(list):
   def __init__(self):
@@ -135,7 +110,7 @@ class Track(list):
     for e in self:
       p = e.get("position", 0)
       d = len(e.get("sound"))
-      str += ' '*int(p*scale)+'┿'*math.ceil(d*scale) + "\n"
+      str += ' ' * int(p * scale) + '┿' * math.ceil(d * scale) + "\n"
     if not skip_print:
       print(str)
     return str
@@ -145,27 +120,27 @@ class Track(list):
     tail = max(empty, *self, key=lambda e: e.get("position")+len(e.get("sound")))
     return tail.get("position") + len(tail.get("sound"))
 
-  def sprinkle(self, sound: AudioSegment, min_gap: int=0, max_gap: int=0, start: int=0, end: int=None, seed=None):
-    random.seed(seed or sound.__hash__())
-    sd = len(sound)
+  def sprinkle(self, sounds, min_gap: int=0, max_gap: int=0, start: int=0, end: int=None):
+    sounds = [sounds] if not isinstance(sounds, list) else sounds
+    erl = endless_random_list(sounds)
     min_gap, max_gap = min(min_gap, max_gap), max(min_gap, max_gap)
     end = self.duration() if end is None else end
     positions = []
-    while start + sd + max_gap < end:
-      start += min_gap if min_gap == max_gap else random.randrange(min_gap, max_gap)
-      positions.append(self.add(sound, start))
+    while True:
+      sound = next(erl)
+      gap = min_gap if min_gap == max_gap else random.randrange(min_gap, max_gap)
+      if start + gap + len(sound) > end:
+        break
+      t = self.add(sound, start+gap)
+      positions.append([sound, start+gap])
+      start = t
     return positions
+
 
   def add(self, sound: AudioSegment, position=None, gain=0, loop=False, times=1) -> int:
     if position is None:
       position = self.t
-    self.append(dict(
-      sound=sound,
-      position=position,
-      gain=gain,
-      loop=loop,
-      times=times
-    ))
+    self.append(dict(sound=sound, position=position, gain=gain, loop=loop, times=times))
     self.t = position + len(sound) * times
     return self.t
 
@@ -181,11 +156,73 @@ class Track(list):
       )
     return base
 
+
 # Monkey patching AudioSegment
 def patchAudioSegment():
   AudioSegment.duration = lambda self: len(self)
-  AudioSegment.play = lambda self, start=0, end=None, duration=None: play(self, start, end, duration)
-  AudioSegment.show = lambda self, width=120, skip_print=False: show(self, width, skip_print)
+  AudioSegment.prettyDuration = lambda self: prettyDuration(len(self))
+
+  def __play(self, start=0, end=None, duration=None):
+    if end is not None:
+      sound = self[start:end]
+    elif duration is not None:
+      sound = self[start:start+abs(duration)]
+    else:
+      sound = self[start:None]
+    print(sound.prettyDuration())
+    playback(sound)
+  
+  AudioSegment.play = __play
+
+  def __show(self, width=120, skip_print=False) -> str:
+    str = ''
+    for chan in self.split_to_mono():
+      str += chan.showMono(width, skip_print)
+    return str
+  AudioSegment.show = __show
+
+  def __showMono(self, width=120, skip_print=False) -> str:
+    data = self.get_array_of_samples()
+    chunkSize = int(len(data) / width)
+    chars = []
+    for co in range(0, len(data)-chunkSize, chunkSize):
+      s = 0
+      for c in range(co, co+chunkSize):
+        s += abs(data[c])
+      chars.append(s / chunkSize)
+    multiplier = pow(max(0.0001, max(*chars)), -1)
+    chars = [c * multiplier for c in chars]
+    cm = '_▁▂▃▄▅▆▇█'
+    str = ''.join([cm[min(len(cm)-1, int(c*(len(cm)-1)))] for c in chars])
+    if not skip_print:
+      print(str)
+    return str
+  AudioSegment.showMono = __showMono
+
+  def __showVertical(self, width=120, height=320, skip_print=False) -> str:
+    str = ''
+    halfwidth = int(width / 2)
+    channels = self.split_to_mono()
+    left, right = channels[0], channels[1] if len(channels) > 1 else None
+    dl = left.get_array_of_samples()
+    dr = [0]*len(dl) if right is None else right.get_array_of_samples()
+    chunkSize = int(len(dl) / height)
+    la, ra = [], []
+    for co in range(0, len(dl)-chunkSize, chunkSize):
+      sl, sr = 0,0
+      for c in range(co, co+chunkSize):
+        sl += abs(dl[c])
+        sr += abs(dr[c])
+      la.append(sl / chunkSize)
+      ra.append(sr / chunkSize)
+    m = pow(max(0.0001, max(*(la+ra))), -1)
+    for l,r in zip(la,ra):
+      l,r = int(l*m*halfwidth), int(r*m*halfwidth)
+      str +=  ' '*(halfwidth - l) + '╠' + '═'*l + '╬' + '═'*r + '╣' + ' '*(halfwidth - r) + "\n"
+    if not skip_print:
+      print(str)
+    return str
+  AudioSegment.showVertical = __showVertical
 
   def __echo(self, delay=300, repeats=3, gain_change=-3) -> AudioSegment:
     base = silence(len(self) + repeats * delay)
@@ -244,5 +281,37 @@ def patchAudioSegment():
   def __trim_silence(self, threshold=-50.0, chunk_size=10) -> AudioSegment:
     return self.ltrim_silence(threshold, chunk_size).rtrim_silence(threshold, chunk_size)
   AudioSegment.trim_silence = __trim_silence
+
+  def __edgefade(self, duration=None):
+    if duration is None:
+      duration = max(20, min(3000, int(len(self) * 0.1)))
+    duration = max(1, min(duration, int(len(self) / 2)))
+    return self.fade_in(duration).fade_out(duration)
+  AudioSegment.edgefade = __edgefade
+
+  def __crossfade(self, snd, duration=500):
+    duration = max(1, min(duration, int(min(len(self), len(snd)) / 2)))
+    base = AudioSegment.silent(len(self) + len(snd) - duration * 2)
+    return base.overlay(self.fade_out(duration), 0).overlay(snd.fade_in(duration), len(self) - duration * 1.4)
+  AudioSegment.crossfade = __crossfade
+
+  def __random_projections(self, duration, min_chunk_size=None, max_chunk_size=None, fade_duration=500, debug=False):
+    random.seed(hash(self) + duration + min_chunk_size + max_chunk_size + fade_duration)
+    if min_chunk_size > max_chunk_size:
+      min_chunk_size, max_chunk_size = max_chunk_size, min_chunk_size
+    min_chunk_size, max_chunk_size = max(1, min(min_chunk_size, len(self)-1)), max(1, min(max_chunk_size, len(self)-1))
+    print(min_chunk_size, max_chunk_size, len(self))
+    cl = min_chunk_size if min_chunk_size == max_chunk_size else random.randrange(min_chunk_size, max_chunk_size)
+    cp = random.randrange(0, len(self) - cl)
+    cs = self[cp:cp+cl]
+    while True:
+      cl = min_chunk_size if min_chunk_size == max_chunk_size else random.randrange(min_chunk_size, max_chunk_size)
+      cp = random.randrange(0, len(self) - cl)
+      cs = cs.crossfade(self[cp:cp+cl], fade_duration)
+      if debug:
+        print(prettyDuration(len(cs)), cp, cl)
+      if len(cs) > duration:
+        return cs[:duration]
+  AudioSegment.random_projections = __random_projections
 
 patchAudioSegment()
