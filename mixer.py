@@ -177,11 +177,11 @@ def patchAudioSegment():
   def __show(self, width=120, skip_print=False) -> str:
     str = ''
     for chan in self.split_to_mono():
-      str += chan.showMono(width, skip_print)
+      str += chan.show_mono(width, skip_print)
     return str
   AudioSegment.show = __show
 
-  def __showMono(self, width=120, skip_print=False) -> str:
+  def __show_mono(self, width=120, skip_print=False) -> str:
     data = self.get_array_of_samples()
     chunkSize = int(len(data) / width)
     chars = []
@@ -197,9 +197,9 @@ def patchAudioSegment():
     if not skip_print:
       print(str)
     return str
-  AudioSegment.showMono = __showMono
+  AudioSegment.show_mono = __show_mono
 
-  def __showVertical(self, width=120, height=320, skip_print=False) -> str:
+  def __show_vertical(self, width=120, height=320, skip_print=False) -> str:
     str = ''
     halfwidth = int(width / 2)
     channels = self.split_to_mono()
@@ -222,7 +222,7 @@ def patchAudioSegment():
     if not skip_print:
       print(str)
     return str
-  AudioSegment.showVertical = __showVertical
+  AudioSegment.show_vertical = __show_vertical
 
   def __echo(self, delay=300, repeats=3, gain_change=-3) -> AudioSegment:
     base = silence(len(self) + repeats * delay)
@@ -313,5 +313,20 @@ def patchAudioSegment():
       if len(cs) > duration:
         return cs[:duration]
   AudioSegment.random_projections = __random_projections
+
+  def __show_fft(self):
+    from scipy.fftpack import fft, fftfreq
+    import matplotlib.pyplot as plt
+    samplerate, data = self.frame_rate, self.set_channels(1).get_array_of_samples()
+    total_samples = len(data)
+    limit = int((total_samples / 2) - 1)
+    fft_abs = abs(fft(data))
+    freqs = fftfreq(total_samples, 1 / samplerate)
+    plt.plot(freqs[:limit], fft_abs[:limit])
+    plt.title('Frequency spectrum')
+    plt.xlabel('Frequency in Hz')
+    plt.ylabel('Amplitude')
+    plt.show()
+  AudioSegment.fft = __fft
 
 patchAudioSegment()
