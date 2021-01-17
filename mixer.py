@@ -1,3 +1,4 @@
+from numpy.core.numeric import cross
 from pydub import AudioSegment
 from pydub.playback import _play_with_ffplay as playback
 from pydub.generators import WhiteNoise
@@ -295,6 +296,11 @@ def patchAudioSegment():
     return base.overlay(self.fade_out(duration), 0).overlay(snd.fade_in(duration), len(self) - duration * 1.4)
   AudioSegment.crossfade = __crossfade
 
+  def __snip(self, start, end, crossfade=None):
+    a,b = self[:start], self[end:]
+    return a.crossfade(b, crossfade) if crossfade is not None else a+b
+  AudioSegment.snip = __snip
+
   def __random_projections(self, duration, min_chunk_size=None, max_chunk_size=None, fade_duration=500, debug=False):
     random.seed(hash(self) + duration + min_chunk_size + max_chunk_size + fade_duration)
     if min_chunk_size > max_chunk_size:
@@ -327,6 +333,6 @@ def patchAudioSegment():
     plt.xlabel('Frequency in Hz')
     plt.ylabel('Amplitude')
     plt.show()
-  AudioSegment.fft = __fft
+  AudioSegment.show_fft = __show_fft
 
 patchAudioSegment()
