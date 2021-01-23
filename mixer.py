@@ -1,23 +1,23 @@
+from types import FunctionType
 from numpy.core.numeric import cross
 from pydub import AudioSegment
 from pydub.playback import _play_with_ffplay as playback
 from pydub.generators import WhiteNoise
 import pydub.scipy_effects
+from pydub.scipy_effects import _mk_butter_filter
 import numpy as np
 import scipy.interpolate as interp
 import os, glob, array, math, random
 from pathlib import Path
 
 class LazySoundLibDict(dict):
-  def setPath(self, path):
-    self.__path__ = path
+  def eager_load(self):
+    return {k:self[k] for k in self.keys()}
 
   def __getitem__(self, key):
     item = dict.__getitem__(self, key)
-    if key == '__path__':
-      return item
-    if isinstance(item, str):
-      item = fetchAndLoad(item, key, self.__path__)
+    if isinstance(item, FunctionType):
+      item = item()
       dict.__setitem__(self, key, item)
     return item
   
@@ -39,10 +39,11 @@ class LazySoundLibDict(dict):
 
 def load_sounds(str, path='.'):
   lib = LazySoundLibDict()
-  lib.setPath(path)
   for name_url in [s.split(None, 1) for s in str.strip().splitlines()]:
     if not name_url[0][0] == '#':
-      lib[name_url[0]] = name_url[1] if len(name_url) > 1 else ''
+      name = name_url[0]
+      url = name_url[1] if len(name_url) > 1 else ''
+      lib[name] = lambda url=url, name=name, path=path: fetchAndLoad(url, name, path) # locking in variables by setting them as defaults
   return lib
 
 def load(path, lib=None, name=None):
@@ -197,7 +198,7 @@ def patchAudioSegment():
     str = ''.join([cm[min(len(cm)-1, int(c*(len(cm)-1)))] for c in chars])
     if not skip_print:
       print(str)
-    return str
+    return str + "\n"
   AudioSegment.show_mono = __show_mono
 
   def __show_vertical(self, width=120, height=320, skip_print=False) -> str:
@@ -227,7 +228,7 @@ def patchAudioSegment():
 
   def __echo(self, delay=300, repeats=3, gain_change=-3) -> AudioSegment:
     base = silence(len(self) + repeats * delay)
-    for i in range(0, repeats):
+    for i in range(0, repeats + 1):
       base = base.overlay(self.apply_gain(i * gain_change), i * delay)
     return base
   AudioSegment.echo = __echo
@@ -245,8 +246,8 @@ def patchAudioSegment():
 
   def __reverse(self) -> AudioSegment:
     channels = self.split_to_mono()
-    for c in channels:
-      c = c._spawn(array.array('h', list(reversed(c.get_array_of_samples()))))
+    for i, chan in enumerate(channels):
+      channels[i] = chan._spawn(array.array('h', list(reversed(chan.get_array_of_samples()))))
     return AudioSegment.from_mono_audiosegments(*channels)
   AudioSegment.reverse = __reverse
 
@@ -302,11 +303,12 @@ def patchAudioSegment():
   AudioSegment.snip = __snip
 
   def __random_projections(self, duration, min_chunk_size=None, max_chunk_size=None, fade_duration=500, debug=False):
-    random.seed(hash(self) + duration + min_chunk_size + max_chunk_size + fade_duration)
+    random.seed(hash(self) + duration + min_chunk_size or 0 + max_chunk_size or 0 + fade_duration or 0)
     if min_chunk_size > max_chunk_size:
       min_chunk_size, max_chunk_size = max_chunk_size, min_chunk_size
     min_chunk_size, max_chunk_size = max(1, min(min_chunk_size, len(self)-1)), max(1, min(max_chunk_size, len(self)-1))
-    print(min_chunk_size, max_chunk_size, len(self))
+    fade_duration = min(fade_duration, min_chunk_size // 2)
+    print(len(self), min_chunk_size, max_chunk_size, fade_duration)
     cl = min_chunk_size if min_chunk_size == max_chunk_size else random.randrange(min_chunk_size, max_chunk_size)
     cp = random.randrange(0, len(self) - cl)
     cs = self[cp:cp+cl]
@@ -334,5 +336,30 @@ def patchAudioSegment():
     plt.ylabel('Amplitude')
     plt.show()
   AudioSegment.show_fft = __show_fft
+
+  def __band_pass_filter(self, low_cutoff_freq, high_cutoff_freq, order=5):
+    filter_fn = _mk_butter_filter([low_cutoff_freq, high_cutoff_freq], 'bandpass', order=order)
+    return self.apply_mono_filter_to_each_channel(filter_fn)
+  AudioSegment.band_pass_filter = __band_pass_filter
+
+  def __band_stop_filter(self, low_cutoff_freq, high_cutoff_freq, order=5):
+    filter_fn = _mk_butter_filter([low_cutoff_freq, high_cutoff_freq], 'bandstop', order=order)
+    return self.apply_mono_filter_to_each_channel(filter_fn)
+  AudioSegment.band_stop_filter = __band_stop_filter
+
+  def __differentiate(self, n=1):
+    channels = self.split_to_mono()
+    for i, chan in enumerate(channels):
+      channels[i] = chan._spawn(array.array('h', list(np.diff(np.array(chan.get_array_of_samples()), n))))
+    return AudioSegment.from_mono_audiosegments(*channels)
+  AudioSegment.differentiate = __differentiate
+
+  # def __fuck(self, n=5):
+  #   channels = self.split_to_mono()
+  #   for i, chan in enumerate(channels):
+  #     channels[i] = chan._spawn(array.array('h', [(y // n) * n  for y in chan.get_array_of_samples()]))
+  #   return AudioSegment.from_mono_audiosegments(*channels)
+  # AudioSegment.fuck = __fuck
+
 
 patchAudioSegment()
